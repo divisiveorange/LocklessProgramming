@@ -4,4 +4,6 @@ project(LockLessProgramming)
 set(CMAKE_CXX_STANDARD 26)
 
 add_executable(LockLessProgramming main.cpp
-        Stack.h)
+        Stack.h
+        Deque.h
+        FixedSizedHashMap.h)

@@ -10,18 +10,18 @@ class Node;
 template <typename T>
 class RawStack;
 template <typename T>
-class NodePtr {
+class CountedPtr {
 public:
     uintptr_t iteration{};
-    Node<T>* ptr{};
-    bool operator==(const NodePtr &) const = default;
+    T* ptr{};
+    bool operator==(const CountedPtr&) const = default;
     bool operator==(std::nullptr_t) const {
         return ptr == nullptr;
     }
     explicit operator bool() const {
         return not operator==(nullptr);
     }
-    static NodePtr null() {
+    static CountedPtr null() {
         return {};
     }
     auto operator*() {
@@ -32,24 +32,26 @@ public:
     }
 };
 template <typename T>
+using NodePtr = CountedPtr<Node<T>>;
+template <typename T>
 class NodeHandle {
     NodePtr<T> node;
-    RawStack<T>& nodeHome;
-    bool movedFrom{};
+    RawStack<T>* nodeHome;
 public:
     NodeHandle(const NodeHandle& other) = delete;
     NodeHandle(NodeHandle&& other) : node(other.node), nodeHome(other.nodeHome) {
-        other.movedFrom = true;
+        other.nodeHome = nullptr;
+        other.node = NodePtr<T>::null();
     }
-    NodeHandle(NodePtr<T> node, RawStack<T>& nodeHome) : node(node), nodeHome(nodeHome) {
+    NodeHandle(NodePtr<T> node, RawStack<T>& nodeHome) : node(node), nodeHome(&nodeHome) {
     }
     T& get() {
         return node->get();
     }
     ~NodeHandle() {
-        if (not movedFrom) {
+        if (nodeHome) {
             node->unSet();
-            nodeHome.push(node);
+            nodeHome->push(node);
         }
     }
 };
@@ -88,13 +90,13 @@ class RawStack {
     std::atomic<NodePtr<T>> head;
 public:
     void push(NodePtr<T> newNode) {
-        newNode->next = head.load();
+        newNode->next = head.load(std::memory_order_relaxed);
         assert(newNode.ptr != newNode->next.ptr);
         while (!head.compare_exchange_weak(newNode->next, newNode)) {
         }
     }
     NodePtr<T> pop() {
-        auto result = head.load();
+        auto result = head.load(std::memory_order_relaxed);
         if (!result) {
             return result;
         }
@@ -134,3 +136,5 @@ public:
         alive.push(nodePtr);
     }
 };
+
+
