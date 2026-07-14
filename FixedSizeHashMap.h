@@ -36,7 +36,7 @@ public:
         return data + i;
     }
     bool full() {
-        return index.load(std::memory_order_relaxed) == size() - 1;
+        return index.load(std::memory_order_relaxed) == size();
     }
     ArenaPart(const ArenaPart&) = delete;
 };
@@ -73,9 +73,13 @@ public:
     Arena(size_t size) : parts((size + N - 1) / N) {}
     T* getMemory() {
         auto hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
-        for (auto i = hash & (N - 1); ; i = (i + 1) & (N - 1))  {
+        auto initial = hash & (N - 1);
+        for (auto i = initial; ; i = (i + 1) & (N - 1))  {
             if (!parts.asArray()[i].full()) {
                 return parts.asArray()[i].getMemory();
+            }
+            if (((i + 1) & (N - 1)) == initial) {
+                throw std::runtime_error("Out of space");
             }
         }
     }
@@ -142,7 +146,7 @@ private:
         return (i + 1) & (size - 1);
     }
 public:
-    FixedSizeHashMap(size_t minSize) : size(1 << (std::bit_width(minSize * 3 / 2)-1)), arena(size), array(new std::atomic<Ptr>[size]) {}
+    FixedSizeHashMap(size_t minSize) : size(1 << (std::bit_width(minSize * 3 / 2))), arena(size), array(new std::atomic<Ptr>[size]) {}
     ~FixedSizeHashMap() {
         delete[] array;
     }
@@ -185,7 +189,7 @@ public:
                 }
             }
             if (nextIndex(i) == initial) {
-                return false;;
+                return false;
             }
         }
     }

@@ -4,34 +4,41 @@
 
 #include "FixedSizeHashMap.h"
 #include "Stack.h"
-
-void doStuff(Stack<int>& stack) {
-    for (auto i = 0ll; i < 100000; i++) {
-        if (i % 2 == 0) {
-            auto handle = stack.pop();
-        }
-        stack.push(i);
+static constexpr int size = 10000;
+static constexpr int threadCount = 16;
+template <typename K, typename V>
+void doStuff(FixedSizeHashMap<K, V>& map, int threadIndex) {
+    for (auto i = 0ll; i < size; i++) {
+        map.set(i, threadIndex);
+        map.remove(size-i);
     }
 }
 
 
 int main() {
-    FixedSizeHashMap<int, std::string> map(10000);
-    map.set(1, std::string("1"));
+    // My goal here is to write code, I can't really be bothered to write super robust testing.
+    FixedSizeHashMap<int, int> map(size * threadCount);
+    map.set(1, 1);
     auto res = map.get(1);
+    std::cout << res->value << std::endl;
     map.remove(1);
-    // Stack<int> stack;
-    // {
-    //     std::vector<std::jthread> threads;
-    //     for (int i = 0; i < 15; i++) {
-    //         threads.emplace_back([&stack]() {
-    //             doStuff(stack);
-    //         });
-    //     }
-    // }
-    // while (auto node = stack.pop()) {
-    //     std::cout << node->get() << std::endl;
-    // }
+    {
+        std::vector<std::jthread> threads;
+        for (int i = 0; i < threadCount; i++) {
+            threads.emplace_back([&map, i]() {
+                doStuff(map, i);
+            });
+        }
+    }
+    for (int i = 0; i < size; i++) {
+        auto ptr = map.get(i);
+        if (ptr) {
+            std::cout << i << ": " << ptr->value << std::endl;
+        } else {
+            std::cout << i << ": null" << std::endl;
+
+        }
+    }
     return 0;
 }
 
