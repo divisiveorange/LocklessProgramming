@@ -17,11 +17,11 @@ class ArenaPart {
     std::atomic<size_t> index{};
     T* data;
 public:
-    size_t size() {
+    size_t size() const {
         return _size;
     }
-    ArenaPart(size_t size) : _size(size), data(::operator new(sizeof(T)*size, std::align_val_t{alignof(T)})) {
-        std::memset(data, 0, sizeof(T)*size);
+    ArenaPart(size_t size) : _size(size), data(static_cast<T *>(::operator new(sizeof(T) * size, std::align_val_t{alignof(T)}))) {
+        std::memset(static_cast<void *>(data), 0, sizeof(T)*size);
         // I'm zeroing so that calling the destructor when memory is unitialised isn't as bad. I'll just leave it
         // to the caller to initialise memory further.
     }
@@ -38,7 +38,7 @@ public:
     bool full() {
         return index.load(std::memory_order_relaxed) == size() - 1;
     }
-    ArenaPart(const Arena&) = delete;
+    ArenaPart(const ArenaPart&) = delete;
 };
 
 template <typename T, size_t size>
@@ -55,8 +55,8 @@ public:
     }
     template <typename... Args>
     FillableArray(Args&&... args) {
-        for (auto* ele : asArray()) {
-            new(ele) T(std::forward<Args>(args)...);
+        for (auto& ele : asArray()) {
+            new(&ele) T(std::forward<Args>(args)...);
         }
         // I'm not concerned with memory leaks if a constructor throws here
     }
@@ -69,6 +69,7 @@ template <typename T>
 class Arena {
     static constexpr size_t N = 32;
     FillableArray<ArenaPart<T>, N> parts;
+public:
     Arena(size_t size) : parts((size + N - 1) / N) {}
     T* getMemory() {
         auto hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
@@ -100,20 +101,26 @@ class alignas(64) Payload {
 template<class Payload>
 class alignas(64) PackedPointer {
     // The pointer part of this should be treated as const.
-    Payload* value;
+    std::uintptr_t value;
     public:
-    PackedPointer(Payload* value = nullptr) : value(value) {}
+    PackedPointer(Payload* value = nullptr) : value(reinterpret_cast<std::uintptr_t>(value)) {}
     static PackedPointer makeDead(Payload* value) {
-        return {value | 1};
+        return {reinterpret_cast<std::uintptr_t>(value) | 1};
     }
     Payload* ptr() const {
-        return value & ~0x1;
+        return reinterpret_cast<Payload *>(value & -2);
+    }
+    auto operator->() const {
+        return ptr();
+    }
+    auto operator*() const {
+        return ptr();
     }
     [[nodiscard]] bool tombstone() const {
         return value & 1;
     }
     [[nodiscard]] bool empty() const {
-        return value == nullptr;
+        return value == 0;
     }
     void kill() {
         value |= 1;
@@ -129,7 +136,7 @@ public:
     using Ptr = PackedPointer<Payload<K, V>>;
 private:
     const size_t size;
-    const Arena<Payload<K,V>> arena;
+    Arena<Payload<K,V>> arena;
     std::atomic<Ptr>* const array;
     [[nodiscard]] size_t nextIndex(size_t i) const {
         return (i + 1) & (size - 1);
@@ -160,7 +167,9 @@ public:
     bool set(const K& key, const V& value) {
         auto hash = std::hash<K>{}(key);
         auto initial = hash & (size - 1);
-        auto payload = PackedPointer(Payload(key, value, hash));
+        Ptr ptr = {arena.getMemory()};
+        ptr = new(ptr.ptr()) Payload<K,V>(key, value, hash);
+        auto payload = PackedPointer(ptr);
         for (auto i = initial; ; i = nextIndex(i)) {
             auto ptr = array[i].load(std::memory_order_relaxed);
             if (ptr.empty()) {

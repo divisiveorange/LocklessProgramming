@@ -2,6 +2,7 @@
 #include <vector>
 #include <__thread/jthread.h>
 
+#include "FixedSizeHashMap.h"
 #include "Stack.h"
 
 void doStuff(Stack<int>& stack) {
@@ -15,18 +16,22 @@ void doStuff(Stack<int>& stack) {
 
 
 int main() {
-    Stack<int> stack;
-    {
-        std::vector<std::jthread> threads;
-        for (int i = 0; i < 15; i++) {
-            threads.emplace_back([&stack]() {
-                doStuff(stack);
-            });
-        }
-    }
-    while (auto node = stack.pop()) {
-        std::cout << node->get() << std::endl;
-    }
+    FixedSizeHashMap<int, std::string> map(10000);
+    map.set(1, std::string("1"));
+    auto res = map.get(1);
+    map.remove(1);
+    // Stack<int> stack;
+    // {
+    //     std::vector<std::jthread> threads;
+    //     for (int i = 0; i < 15; i++) {
+    //         threads.emplace_back([&stack]() {
+    //             doStuff(stack);
+    //         });
+    //     }
+    // }
+    // while (auto node = stack.pop()) {
+    //     std::cout << node->get() << std::endl;
+    // }
     return 0;
 }
 
