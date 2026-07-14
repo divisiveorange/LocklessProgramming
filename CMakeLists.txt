@@ -7,4 +7,5 @@ add_executable(LockLessProgramming main.cpp
         Stack.h
         Deque.h
         FixedSizeHashMap.h
-        BasicStack.h)
+        BasicStack.h
+        ResizeableHashMap.h)

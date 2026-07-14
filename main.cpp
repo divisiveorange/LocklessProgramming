@@ -59,9 +59,9 @@ int main() {
         Resizeable hashmap:
 2 flatmaps. A small one and a large one. They should have pointers to payloads (key + value).
 Searching:
-    search both maps, larger first and return that value.
+    search both maps, larger first, smaller and then larger again and return that value.
 Deletion:
-    search both and delete when found. Always search both
+    search both and delete when found. Always search both. If a tombstone with a pointer intact is found,
 Insertion:
     insert into larger, then if there is a value in smaller, remove it, else move some other value from
     smaller to larger by copying it to larger, then removing from smaller.
