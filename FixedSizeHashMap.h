@@ -3,11 +3,13 @@
 #include <bit>
 #include <vector>
 #include <cstdlib>
+#include <thread>
+#include <__thread/this_thread.h>
 
 template <class K, class V>
 class FixedSizeHashMap;
 template <typename T>
-class Arena {
+class ArenaPart {
     // The reason _size is private with a getter instead of public is because I'd rather have the constructor initialise
     // it first but I want members before methods and don't want to intermix public and private multiple times. So
     // for that reason, all the members are private
@@ -18,12 +20,12 @@ public:
     size_t size() {
         return _size;
     }
-    Arena(size_t size) : _size(size), data(::operator new(sizeof(T)*size, std::align_val_t{alignof(T)})) {
+    ArenaPart(size_t size) : _size(size), data(::operator new(sizeof(T)*size, std::align_val_t{alignof(T)})) {
         std::memset(data, 0, sizeof(T)*size);
         // I'm zeroing so that calling the destructor when memory is unitialised isn't as bad. I'll just leave it
         // to the caller to initialise memory further.
     }
-    ~Arena() {
+    ~ArenaPart() {
         for (size_t i = 0; i < index; i++) {
             data[i].~T();
         }
@@ -33,7 +35,49 @@ public:
         auto i = index.fetch_add(1, std::memory_order_relaxed);
         return data + i;
     }
-    Arena(const Arena&) = delete;
+    bool full() {
+        return index.load(std::memory_order_relaxed) == size() - 1;
+    }
+    ArenaPart(const Arena&) = delete;
+};
+
+template <typename T, size_t size>
+class FillableArray {
+    // I wanted to create a stack array with a specific value without needed a default constructor or listing it out
+    // many times.
+    // When writing this codebase, in many places, when faced with C++ lacking a neat way to do a specific thing,
+    // I just did the specific thing at the cost of messy code. Instead of settling.
+    using ArrayType = std::array<T, size>;
+    alignas(alignof(ArrayType)) char data[sizeof(ArrayType)];
+public:
+    std::array<T, size>& asArray() {
+        return *reinterpret_cast<ArrayType*>(&data);
+    }
+    template <typename... Args>
+    FillableArray(Args&&... args) {
+        for (auto* ele : asArray()) {
+            new(ele) T(std::forward<Args>(args)...);
+        }
+        // I'm not concerned with memory leaks if a constructor throws here
+    }
+    ~FillableArray() {
+        asArray().~ArrayType();
+    }
+
+};
+template <typename T>
+class Arena {
+    static constexpr size_t N = 32;
+    FillableArray<ArenaPart<T>, N> parts;
+    Arena(size_t size) : parts((size + N - 1) / N) {}
+    T* getMemory() {
+        auto hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
+        for (auto i = hash & (N - 1); ; i = (i + 1) & (N - 1))  {
+            if (!parts.asArray()[i].full()) {
+                return parts.asArray()[i].getMemory();
+            }
+        }
+    }
 };
 template <class K, class V>
 class alignas(64) Payload {
@@ -96,7 +140,7 @@ public:
         delete[] array;
     }
     Ptr get(const K& key) const {
-        auto hash = std::hash(key);
+        auto hash = std::hash<K>{}(key);
         auto initial = hash & (size - 1);
         for (auto i = initial; ; i = nextIndex(i)) {
             auto ptr = array[i].load(std::memory_order_relaxed);
@@ -114,7 +158,7 @@ public:
         }
     }
     bool set(const K& key, const V& value) {
-        auto hash = std::hash(key);
+        auto hash = std::hash<K>{}(key);
         auto initial = hash & (size - 1);
         auto payload = PackedPointer(Payload(key, value, hash));
         for (auto i = initial; ; i = nextIndex(i)) {
@@ -137,7 +181,7 @@ public:
         }
     }
     void remove(const K& key) {
-        auto hash = std::hash(key);
+        auto hash = std::hash<K>{}(key);
         auto initial = hash & (size - 1);
         for (auto i = initial; ; i = nextIndex(i)) {
             auto ptr = array[i].load(std::memory_order_relaxed);
@@ -156,3 +200,6 @@ public:
         }
     }
 };
+
+// I really like both high performance and object-oriented programming. While OOP is often bad for performance,
+// encapsulation is generally very fine and so, I still use it heavily. As well as templates for polymorphism.
