@@ -1,5 +1,7 @@
 #pragma once
 #include <atomic>
+#include <stdexcept>
+#include <algorithm>
 template<typename K, typename V>
 class ResizeableHashMap;
 
@@ -35,6 +37,9 @@ public:
 
     static PackedPointer makeDead(Payload *value) {
         return {reinterpret_cast<std::uintptr_t>(value) | 1};
+    }
+    PackedPointer makeDead() {
+        return makeDead(ptr());
     }
 
     Payload *ptr() const {
@@ -99,7 +104,7 @@ private:
     std::atomic<Maps *> maps;
 
 public:
-    Payload<K, V> *get(const K &key) {
+    Payload<K, V>* get(const K &key) {
         auto currMaps = maps.load(std::memory_order_acquire);
         auto hash = std::hash<K>{}(key);
         auto currArr = currMaps->curr.data;
@@ -166,7 +171,118 @@ public:
         }
     }
 
-    void remove(const K &key);
+    bool remove(const K &key) {
+        auto currMaps = maps.load(std::memory_order_acquire);
+        auto hash = std::hash<K>{}(key);
+        auto currArr = currMaps->curr.data;
+        {
+            auto initial = hash & (currArr.size - 1);
+            for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
+                auto ptr = currArr[i].load(std::memory_order_acquire);
+                if (ptr.empty()) {
+                    break;
+                }
+                if (ptr.alive()) {
+                    if (ptr->hash == hash && ptr->key == key) {
+                        auto deadPtr = ptr.makeDead();
+                        if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                            return true;
+                        }
+                    }
+                }
+                if (((i + 1) & (currArr.size - 1)) == initial) {
+                    break;
+                }
+            }
+        }
+        currArr = currMaps->old.data;
+        PackedPointer<Payload<K,V>> targetPtr{};
+        {
+            auto initial = hash & (currArr.size - 1);
+            for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
+                auto ptr = currArr[i].load(std::memory_order_acquire);
+                if (ptr.empty()) {
+                    return false;
+                }
+                if (ptr.alive()) {
+                    if (ptr->hash == hash && ptr->key == key) {
+                        auto deadPtr = ptr.makeDead();
+                        if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                            return true;
+                        }
+                    }
+                }
+                if (ptr.beingMoved()) {
+                    if (ptr->hash == hash && ptr->key == key) {
+                        targetPtr == ptr.ptr();
+                        break;
+                    }
+                }
+                if (((i + 1) & (currArr.size - 1)) == initial) {
+                    return false;
+                }
+            }
+        }
+        currArr = currMaps->curr.data;
+        {
+            auto initial = hash & (currArr.size - 1);
+            for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
+                auto ptr = currArr[i].load(std::memory_order_acquire);
+                if (ptr.empty()) {
+                    auto deadPtr = targetPtr.makeDead();
+                    if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                        return true;
+                    }
+                }
+                if (ptr.ptr() == targetPtr.ptr()) {
+                    if (ptr.alive()) {
+                        auto deadPtr = targetPtr.makeDead();
+                        return currArr[i].compare_exchange_strong(ptr, deadPtr);
+                    }
+                    return false;
+                }
+                if (((i + 1) & (currArr.size - 1)) == initial) {
+                    throw std::runtime_error("Out of space in HashMap");
+                }
+            }
+        }
+    }
 
-    bool insert(const K &key, const V &value);
+    void insert(const K &key, const V &value) {
+    }
+private:
+    void moveItems() {
+        auto currMaps = maps.load(std::memory_order_acquire);
+        auto index = currMaps->old.moving_index.fetch_add(16);
+        if (index < currMaps->old.size) {
+            auto begin = &currMaps->old.data[index];
+            auto end = &currMaps->old.data[std::max(index + 16, currMaps->old.size)];
+            for (auto it = begin; begin != end; ++begin) {
+                auto ptr = it->load(std::memory_order_acquire);
+                if (ptr.alive()) {
+                    auto movedPtr = ptr; movedPtr.markMoved();
+                    if (it->compare_exchange_strong(ptr, movedPtr)) {
+                        moveInsert(ptr, currMaps->curr);
+                    }
+                }
+            }
+        }
+    }
+    void moveInsert(PackedPointer<Payload<K,V>> ptr, Maps::Map& map) {
+        auto initial = ptr->hash & (map.size - 1);
+        for (auto i = initial; ; i = (i+1) & (map.size - 1)) {
+            auto slot = map.data[i].load(std::memory_order_acquire);
+            if (slot.empty()) {
+                if (map.data[i].compare_exchange_strong(slot, {ptr.ptr()})) {
+                    return;
+                }
+            }
+            if (slot->hash == ptr->hash && slot->key == ptr->hash) {
+                return;
+            }
+            if (initial == ((i+1) & (map.size -1 ))) {
+                throw std::runtime_error("Out of space in HashMap");
+            }
+        }
+    }
 };
