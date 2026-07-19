@@ -38,7 +38,12 @@ public:
     bool full() {
         return index.load(std::memory_order_relaxed) == size();
     }
+    // Most of this object can be const (and copying an arena is unnecessary), I prefer that. Many containers benefit
+    // or require moving, but for code only I will write, I'd rather make those containers accept this myself.
     ArenaPart(const ArenaPart&) = delete;
+    ArenaPart(ArenaPart&&) = delete;
+    ArenaPart& operator=(const ArenaPart&) = delete;
+    ArenaPart& operator=(ArenaPart&&) = delete;
 };
 
 template <typename T, size_t size>
@@ -58,7 +63,7 @@ public:
         for (auto& ele : asArray()) {
             new(&ele) T(std::forward<Args>(args)...);
         }
-        // I'm not concerned with memory leaks if a constructor throws here
+        // I'm not too concerned with memory leaks if a constructor throws here
     }
     ~FillableArray() {
         asArray().~ArrayType();
@@ -150,21 +155,21 @@ public:
     ~FixedSizeHashMap() {
         delete[] array;
     }
-    Ptr get(const K& key) const {
+    Payload<K,V>* get(const K& key) const {
         auto hash = std::hash<K>{}(key);
         auto initial = hash & (size - 1);
         for (auto i = initial; ; i = nextIndex(i)) {
             auto ptr = array[i].load(std::memory_order_relaxed);
             if (ptr.empty()) {
-                return ptr;
+                return ptr.ptr();
             }
             if (not ptr.tombstone()) {
                 if (ptr->key == key) {
-                    return ptr;
+                    return ptr.ptr();
                 }
             }
             if (nextIndex(i) == initial) {
-                return {nullptr};
+                return nullptr;
             }
         }
     }

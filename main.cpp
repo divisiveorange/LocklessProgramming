@@ -61,7 +61,8 @@ int main() {
 Searching:
     search both maps, larger first, smaller and then larger again and return that value.
 Deletion:
-    search both and delete when found. Always search both. If a tombstone with a pointer intact is found,
+    search both and delete when found. Always search both. If a moved node is found, move to larger with a tombstone
+    with the same pointer.
 Insertion:
     insert into larger, then if there is a value in smaller, remove it, else move some other value from
     smaller to larger by copying it to larger, then removing from smaller.
