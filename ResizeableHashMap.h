@@ -2,11 +2,14 @@
 #include <atomic>
 #include <stdexcept>
 #include <algorithm>
+#include <thread>
+#include <__new/interference_size.h>
+#include <__thread/this_thread.h>
 template<typename K, typename V>
 class ResizeableHashMap;
 
 template<class K, class V>
-class alignas(64) Payload {
+class Payload {
 public:
     const K key;
     const V value;
@@ -27,7 +30,7 @@ private:
 };
 
 template<class Payload>
-class alignas(64) PackedPointer {
+class PackedPointer {
     // The pointer part of this should be treated as const.
     std::uintptr_t value;
 
@@ -92,22 +95,112 @@ class ResizeableHashMap {
     public:
         class Map {
         public:
-            std::atomic<Ptr> *data;
+            Map(size_t size) : size(size), population(*this) {
+                data = new std::atomic<Ptr>[size];
+            }
+            std::atomic<Ptr>* data;
             const size_t size;
-            std::atomic<size_t> moving_index{};
-        };
+            auto& operator[](size_t i) {
+                return data[i];
+            }
+            class Population {
+                Population(Map& thisMap) : thisMap(thisMap) {}
+                struct alignas(std::hardware_destructive_interference_size) perThreadCounter {
+                    long long countRemaining{};
+                };
+                static constexpr int incrementSize = 16;
+                static constexpr int threadHashSize = 32;
 
-        Map curr, old;
+                std::atomic<size_t> overEstimate{};
+                std::array<std::atomic<perThreadCounter>, 32> counters{};
+
+                std::array<std::atomic<perThreadCounter>, 32> deletions{};
+                Map& thisMap;
+            public:
+                size_t getSloppySize() const {
+                    return overEstimate.load(std::memory_order_acquire);
+                }
+                size_t calculateDeletionCount() {
+                    size_t count{};
+                    for (auto perHashCount : deletions) {
+                        count += perHashCount.load(std::memory_order_acquire);
+                    }
+                    return count;
+                }
+                void increment() {
+                    auto index = std::hash<std::thread::id>{}(std::this_thread::get_id()) & (threadHashSize-1);
+                    auto remaining = counters[index].fetch_sub(1, std::memory_order_acq_rel);
+                    if (remaining <= 0) {
+                        auto totalCount = overEstimate.fetch_add(incrementSize, std::memory_order_acq_rel);
+                        if (totalCount + incrementSize >= thisMap.size / 2) {
+                            thisMap.resize(totalCount + incrementSize);
+                        }
+                    }
+                }
+                void decrement() {
+                    auto index = std::hash<std::thread::id>{}(std::this_thread::get_id()) & (threadHashSize-1);
+                    deletions[index].fetch_add(1, std::memory_order_release);
+                }
+            } population{};
+            void moveInsert(PackedPointer<Payload<K,V>> ptr) {
+                auto initial = ptr->hash & (size - 1);
+                for (auto i = initial; ; i = (i+1) & (size - 1)) {
+                    auto slot = data[i].load(std::memory_order_acquire);
+                    if (slot.empty()) {
+                        population.increment();
+                        if (data[i].compare_exchange_strong(slot, {ptr.ptr()})) {
+                            return;
+                        }
+                    }
+                    if (slot->hash == ptr->hash && slot->key == ptr->hash) {
+                        return;
+                    }
+                    if (initial == ((i+1) & (map.size -1 ))) {
+                        throw std::runtime_error("Out of space in HashMap");
+                    }
+                }
+            }
+        };
+        Map& curr, old;
+        std::atomic<size_t> movingIndex{};
+        std::atomic<bool>* movedChunks;
+        Maps(Map& curr, Map& old) : curr(curr), old(old) {
+            movedChunks = new std::atomic<bool>[old.size / 16]{};
+        }
+        void moveItems(size_t index) {
+            if (index < old.size) {
+                auto begin = &old.data[index];
+                auto end = &old.data[std::max(index + 16, currMaps->old.size)];
+                for (auto it = begin; begin != end; ++begin) {
+                    auto ptr = it->load(std::memory_order_acquire);
+                    if (ptr.alive()) {
+                        auto movedPtr = ptr; movedPtr.markMoved();
+                        if (it->compare_exchange_strong(ptr, movedPtr)) {
+                            curr.moveInsert(ptr);
+                        }
+                    }
+                }
+                movedChunks[index / 16].store(true, std::memory_order_release);
+            }
+        }
+        void ensureAllMoved() {
+            for (size_t i = 0; i < old.size; i += 16) {
+                if (not movedChunks[i].load(std::memory_order_acquire)) {
+                    moveItems(i);
+                }
+            }
+        }
     };
 
 private:
     std::atomic<Maps *> maps;
 
 public:
+
     Payload<K, V>* get(const K &key) {
         auto currMaps = maps.load(std::memory_order_acquire);
         auto hash = std::hash<K>{}(key);
-        auto currArr = currMaps->curr.data;
+        auto currArr = currMaps->curr;
         {
             auto initial = hash & (currArr.size - 1);
             for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
@@ -125,7 +218,7 @@ public:
                 }
             }
         }
-        currArr = currMaps->old.data;
+        currArr = currMaps->old;
         PackedPointer<Payload<K,V>> targetPtr{};
         {
             auto initial = hash & (currArr.size - 1);
@@ -150,7 +243,7 @@ public:
                 }
             }
         }
-        currArr = currMaps->curr.data;
+        currArr = currMaps->curr;
         {
             auto initial = hash & (currArr.size - 1);
             for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
@@ -170,11 +263,12 @@ public:
             }
         }
     }
-
     bool remove(const K &key) {
+       remove(key, std::hash<K>{}(key));
+    }
+    bool remove(const K &key, const size_t hash) {
         auto currMaps = maps.load(std::memory_order_acquire);
-        auto hash = std::hash<K>{}(key);
-        auto currArr = currMaps->curr.data;
+        auto currArr = currMaps->curr;
         {
             auto initial = hash & (currArr.size - 1);
             for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
@@ -186,6 +280,10 @@ public:
                     if (ptr->hash == hash && ptr->key == key) {
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                            if (!checkCorrectMap(currMaps)) {
+                                return remove(key, hash);
+                            }
+                            currMaps->curr.population.decrement();
                             return true;
                         }
                     }
@@ -195,7 +293,7 @@ public:
                 }
             }
         }
-        currArr = currMaps->old.data;
+        currArr = currMaps->old;
         PackedPointer<Payload<K,V>> targetPtr{};
         {
             auto initial = hash & (currArr.size - 1);
@@ -208,6 +306,9 @@ public:
                     if (ptr->hash == hash && ptr->key == key) {
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                            if (!checkCorrectMap(currMaps)) {
+                                return remove(key, hash);
+                            }
                             return true;
                         }
                     }
@@ -223,21 +324,34 @@ public:
                 }
             }
         }
-        currArr = currMaps->curr.data;
+        currArr = currMaps->curr;
         {
             auto initial = hash & (currArr.size - 1);
             for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
                 auto ptr = currArr[i].load(std::memory_order_acquire);
                 if (ptr.empty()) {
                     auto deadPtr = targetPtr.makeDead();
+                    currMaps->curr.population.increment();
                     if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                        if (!checkCorrectMap(currMaps)) {
+                            return remove(key, hash);
+                        }
+                        currMaps->curr.population.decrement();
                         return true;
                     }
                 }
                 if (ptr.ptr() == targetPtr.ptr()) {
                     if (ptr.alive()) {
                         auto deadPtr = targetPtr.makeDead();
-                        return currArr[i].compare_exchange_strong(ptr, deadPtr);
+                        if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                            if (!checkCorrectMap(currMaps)) {
+                                return remove(key, hash);
+                            }
+                            currMaps->curr.population.decrement();
+                            return true;
+                        }
+                        return false;
+
                     }
                     return false;
                 }
@@ -247,42 +361,69 @@ public:
             }
         }
     }
-
     void insert(const K &key, const V &value) {
+        auto hash = std::hash<K>{}(key);
+        Ptr ptrToInsert(new Payload<K, V>(key, value, hash));
+        insert(key, value, hash, ptrToInsert);
     }
-private:
-    void moveItems() {
+
+    void insert(const K &key, const V &value, size_t hash, Ptr ptrToInsert) {
         auto currMaps = maps.load(std::memory_order_acquire);
-        auto index = currMaps->old.moving_index.fetch_add(16);
-        if (index < currMaps->old.size) {
-            auto begin = &currMaps->old.data[index];
-            auto end = &currMaps->old.data[std::max(index + 16, currMaps->old.size)];
-            for (auto it = begin; begin != end; ++begin) {
-                auto ptr = it->load(std::memory_order_acquire);
-                if (ptr.alive()) {
-                    auto movedPtr = ptr; movedPtr.markMoved();
-                    if (it->compare_exchange_strong(ptr, movedPtr)) {
-                        moveInsert(ptr, currMaps->curr);
+        currMaps->curr.population.increment();
+        // This is to speed up cases where this thread just updated the Maps
+        currMaps = maps.load(std::memory_order_relaxed);
+        auto currArr = currMaps->curr;
+        auto initial = hash & (currArr.size - 1);
+        for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
+            auto ptr = currArr[i].load(std::memory_order_acquire);
+            if (ptr.empty()) {
+                if (currArr[i].compare_exchange_strong(ptr, ptrToInsert)) {
+                    if (!checkCorrectMap(currMaps)) {
+                        insert(key, vaule, hash, ptrToInsert);
                     }
-                }
-            }
-        }
-    }
-    void moveInsert(PackedPointer<Payload<K,V>> ptr, Maps::Map& map) {
-        auto initial = ptr->hash & (map.size - 1);
-        for (auto i = initial; ; i = (i+1) & (map.size - 1)) {
-            auto slot = map.data[i].load(std::memory_order_acquire);
-            if (slot.empty()) {
-                if (map.data[i].compare_exchange_strong(slot, {ptr.ptr()})) {
                     return;
                 }
             }
-            if (slot->hash == ptr->hash && slot->key == ptr->hash) {
-                return;
+            if (ptr.alive()) {
+                if (ptr->hash == hash && ptr->key == key) {
+                    if (currArr[i].compare_exchange_strong(ptr, ptrToInsert)) {
+                        if (!checkCorrectMap(currMaps)) {
+                            insert(key, vaule, hash, ptrToInsert);
+                        }
+                        return;
+                    }
+                }
             }
-            if (initial == ((i+1) & (map.size -1 ))) {
+            if (((i + 1) & (currArr.size - 1)) == initial) {
                 throw std::runtime_error("Out of space in HashMap");
             }
         }
+    }
+private:
+    void resize(size_t oldCount) {
+        auto& currMaps = maps.load(std::memory_order_acquire);
+        ensureAllMoved(currMaps);
+        auto deleted = currMaps->curr.population.calculateDeletionCount();
+        size_t newSize = 0;
+        if (deleted <= oldCount / 2) {
+            newSize = currMaps->curr.size * 2;
+        } else if (deleted > oldCount * 3 / 4) {
+            newSize = currMaps->curr.size / 2;
+        } else {
+            newSize = currMaps->curr.size;
+        }
+        newSize = std::max(newSize, 16uz);
+        auto* newMap = new Maps::Map(newSize);
+        auto* newMaps = new Maps(*newMap, currMaps->curr);
+        maps.compare_exchange_strong(currMaps, newMaps, std::memory_order_release, std::memory_order_relaxed);
+    }
+    bool checkCorrectMap(Maps* assumedMaps) {
+        return assumedMaps == this->maps.load(std::memory_order_acquire);
+    }
+
+    void moveItems() {
+        auto currMaps = maps.load(std::memory_order_acquire);
+        auto index = currMaps->movingIndex.fetch_add(16);
+        currMaps->moveItems(index);
     }
 };
