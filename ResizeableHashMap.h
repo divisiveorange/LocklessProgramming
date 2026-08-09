@@ -75,7 +75,7 @@ public:
     }
 
     bool alive() {
-        return !(value & 3);
+        return !(value & 3) and !empty();
     }
 
     void markMoved() {
@@ -169,6 +169,7 @@ class ResizeableHashMap {
             movedChunks = new std::atomic<bool>[this->old.size / 16]{};
         }
         Maps(size_t oldSize, size_t newSize, ResizeableHashMap& map) : curr(*new Map(newSize, map)), old(*new Map(oldSize, map)) {
+            movedChunks = new std::atomic<bool>[this->old.size / 16]{};
         }
         void moveItems(size_t index) {
             if (index < old.size) {
