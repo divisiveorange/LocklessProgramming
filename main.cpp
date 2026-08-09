@@ -1,15 +1,15 @@
 #include <iostream>
 #include <vector>
 #include <__thread/jthread.h>
+#include "ResizeableHashMap.h"
 
-#include "FixedSizeHashMap.h"
 #include "Stack.h"
 static constexpr int size = 10000;
 static constexpr int threadCount = 16;
 template <typename K, typename V>
-void doStuff(FixedSizeHashMap<K, V>& map, int threadIndex) {
+void doStuff(ResizeableHashMap<K, V>& map, int threadIndex) {
     for (auto i = 0ll; i < size; i++) {
-        map.set(i, threadIndex);
+        map.insert(i, threadIndex);
         map.remove(size-i);
     }
 }
@@ -17,8 +17,8 @@ void doStuff(FixedSizeHashMap<K, V>& map, int threadIndex) {
 
 int main() {
     // My goal here is to write code, I can't really be bothered to write super robust testing.
-    FixedSizeHashMap<int, int> map(size * threadCount);
-    map.set(1, 1);
+    ResizeableHashMap<int, int> map;
+    map.insert(1, 1);
     auto res = map.get(1);
     std::cout << res->value << std::endl;
     map.remove(1);
@@ -36,7 +36,6 @@ int main() {
             std::cout << i << ": " << ptr->value << std::endl;
         } else {
             std::cout << i << ": null" << std::endl;
-
         }
     }
     return 0;
