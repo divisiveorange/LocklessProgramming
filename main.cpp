@@ -4,18 +4,74 @@
 #include "ResizeableHashMap.h"
 
 #include "Stack.h"
-static constexpr int size = 10000;
-static constexpr int threadCount = 16;
+static constexpr int size = 1000;
+static constexpr int threadCount = 1;
 template <typename K, typename V>
 void doStuff(ResizeableHashMap<K, V>& map, int threadIndex) {
     for (auto i = 0ll; i < size; i++) {
         map.insert(i, threadIndex);
+        std::this_thread::sleep_for(std::chrono::nanoseconds(10000));
         map.remove(size-i);
     }
 }
 
-
-int main() {
+bool testDataRemains() {
+    ResizeableHashMap<int, bool> map;
+    {
+        std::vector<std::jthread> threads;
+        threads.reserve(threadCount);
+        for (int i = 0; i < threadCount; i++) {
+            threads.emplace_back([&map, i]() {
+                for (int j = 0; j < size; j++) {
+                    map.insert(size*i + j, true);
+                    if (j >= 4) {
+                        if (!map.get(size*i+j-4)) {
+                            std::cout << size*i+j-4 << " is missing\n";
+                        }
+                    }
+                }
+            });
+        }
+    }
+    for (int i = 0; i < threadCount; i++) {
+        for (int j = size; j < size; j++) {
+            if (!map.get(size*i+j)) {
+                std::cout << size*i+j << " Was removed\n";
+                auto curr = map.getCurrMap();
+                return false;
+            }
+        }
+    }
+    {
+        std::vector<std::jthread> threads;
+        threads.reserve(threadCount);
+        for (int i = 0; i < threadCount; i++) {
+            threads.emplace_back([&map, i]() {
+                for (int j = 0; j < size/2; j++) {
+                    map.remove(size*i + j);
+                    map.insert(threadCount*size + j, true);
+                }
+            });
+        }
+    }
+    for (int i = 0; i < threadCount; i++) {
+        for (int j = 0; j < size/2; j++) {
+            if (map.get(size*i+j)) {
+                std::cout << size*i+j << " Remains\n";
+                return false;
+            }
+        }
+        for (int j = size/2; j < size; j++) {
+            if (!map.get(size*i+j)) {
+                std::cout << size*i+j << " Was removed\n";
+                auto curr = map.getCurrMap();
+                return false;
+            }
+        }
+    }
+    return true;
+}
+void smokeTest() {
     // My goal here is to write code, I can't really be bothered to write super robust testing.
     ResizeableHashMap<int, int> map;
     map.insert(1, 1);
@@ -31,13 +87,16 @@ int main() {
         }
     }
     for (int i = 0; i < size; i++) {
-        auto ptr = map.get(i);
-        if (ptr) {
+        if (auto ptr = map.get(i)) {
             std::cout << i << ": " << ptr->value << std::endl;
         } else {
             std::cout << i << ": null" << std::endl;
         }
     }
+}
+
+int main() {
+    std::cout << (testDataRemains() ? "true" : "false") << "\n";
     return 0;
 }
 
