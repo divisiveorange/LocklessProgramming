@@ -75,7 +75,7 @@ public:
     }
 
     bool alive() {
-        return !(value & 3) and !empty();
+        return !(value & 1) and !empty();
     }
     bool dead() {
         return value & 1;
@@ -184,10 +184,13 @@ class ResizeableHashMap {
                 }
                 auto operator++() {
                     while (curr != end) {
+                        ++curr;
                         if (curr->load(std::memory_order_acquire).alive()) {
                             return;
                         }
-                        ++curr;
+                    }
+                    if (curr > end) {
+                        curr = end;
                     }
                 }
                 auto operator*() {
@@ -206,6 +209,15 @@ class ResizeableHashMap {
             iterator end() {
                 return iterator(data + size, data + size);
             }
+            bool contains(const K& key) {
+                for (auto it = begin(); it != end(); ++it) {
+                    auto item = *it;
+                    if (item->key == key) {
+                        return true;
+                    }
+                }
+                return false;
+            }
         };
         Map* curr,* old;
         ResizeableHashMap& fullMap;
@@ -223,11 +235,9 @@ class ResizeableHashMap {
             if (index < old->size) {
                 auto begin = &old->data[index];
                 auto end = &old->data[std::min(index + 16, old->size)];
-                auto count = 0;
                 for (auto it = begin; it < end; ++it) {
                     auto ptr = it->load(std::memory_order_acquire);
                     if (not ptr.dead() and not ptr.empty()) {
-                        count++;
                         auto movedPtr = ptr; movedPtr.markMoved();
                         if (it->compare_exchange_strong(ptr, movedPtr)) {
                             curr->moveInsert(ptr);
@@ -247,21 +257,19 @@ class ResizeableHashMap {
             for (size_t i = 0; i < old->size; i += 16) {
                 if (not movedChunks[i/16].load(std::memory_order_acquire)) {
                     moveItems(i);
-                    if (not movedChunks[i/16].load(std::memory_order_acquire)) {
-
-                    }
-                }
-                for (size_t j = i; j < i + 16; j++) {
-                    if (old->data->load(std::memory_order_acquire).alive()) {
-
-                    }
+                    // if (not movedChunks[i/16].load(std::memory_order_acquire)) {
+                    //
+                    // }
                 }
             }
-            for (size_t i = 0; i < old->size; i++) {
-                if (old->data->load(std::memory_order_acquire).alive()) {
-
-                }
-            }
+            // for (size_t i = 0; i < old->size; i++) {
+            //     if (((old->data))[i].load(std::memory_order_acquire).alive()) {
+            //         auto ptr = (((old->data))[i].load(std::memory_order_acquire));
+            //         if (!curr->contains(ptr->key)) {
+            //
+            //         }
+            //     }
+            // }
         }
     };
 
@@ -282,6 +290,11 @@ public:
                 if (ptr.empty()) {
                     break;
                 }
+                if (ptr.beingMoved()) {
+                    if (!checkCorrectMap(currMaps)) {
+                        return get(key);
+                    }
+                }
                 if (ptr.alive()) {
                     if (ptr->hash == hash && ptr->key == key) {
                         return ptr.ptr();
@@ -299,17 +312,20 @@ public:
             for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
                 auto ptr = currArr[i].load(std::memory_order_acquire);
                 if (ptr.empty()) {
-                    return nullptr;
-                }
-                if (ptr.alive()) {
-                    if (ptr->hash == hash && ptr->key == key) {
-                        return ptr.ptr();
+                    if (!checkCorrectMap(currMaps)) {
+                        return get(key);
                     }
+                    return nullptr;
                 }
                 if (ptr.beingMoved()) {
                     if (ptr->hash == hash && ptr->key == key) {
                         targetPtr = ptr.ptr();
                         break;
+                    }
+                }
+                if (ptr.alive()) {
+                    if (ptr->hash == hash && ptr->key == key) {
+                        return ptr.ptr();
                     }
                 }
                 if (((i + 1) & (currArr.size - 1)) == initial) {
@@ -328,6 +344,9 @@ public:
                 if (ptr.ptr() == targetPtr.ptr()) {
                     if (ptr.alive()) {
                         return ptr.ptr();
+                    }
+                    if (!checkCorrectMap(currMaps)) {
+                        return get(key);
                     }
                     return nullptr;
                 }
@@ -450,8 +469,6 @@ public:
             auto ptr = currArr[i].load(std::memory_order_acquire);
             if (ptr.empty()) {
                 currMaps->curr->population.increment();
-                // This is to speed up cases where this thread just updated the Maps
-                currMaps = maps.load(std::memory_order_relaxed);
                 moveItems();
                 if (currArr[i].compare_exchange_strong(ptr, ptrToInsert)) {
                     if (!checkCorrectMap(currMaps)) {
@@ -479,9 +496,9 @@ public:
         auto currMaps = maps.load(std::memory_order_acquire);
         currMaps->ensureAllMoved();
         auto* oldMap = currMaps->old;
-        if (!oldMap->checkAllMoved()) {
-
-        }
+        // if (!oldMap->checkAllMoved()) {
+        //
+        // }
         auto deleted = currMaps->curr->population.calculateDeletionCount();
         size_t newSize = 0;
         if (deleted <= oldCount / 2) {
@@ -495,26 +512,30 @@ public:
         auto* newMap = new Maps::Map(newSize, *this, currMaps->curr->generation + 1);
         auto* newMaps = new Maps(newMap, currMaps->curr, *this);
         auto* prevCurr = currMaps->curr;
-        if (!oldMap->checkAllMoved()) {
-
-        }
-        currMaps->ensureAllMoved();
-        if (!oldMap->checkAllMoved()) {
-
-        }
+        // if (!oldMap->checkAllMoved()) {
+        //
+        // }
+        // currMaps->ensureAllMoved();
+        // if (!oldMap->checkAllMoved()) {
+        //
+        // }
         auto resized = maps.compare_exchange_strong(currMaps, newMaps);
         if (resized) {
-
-            if (!oldMap->checkAllMoved()) {
-
-            }
+            // for (auto it = oldMap->begin(); it != oldMap->end(); ++it) {
+            //     if (!get((*it)->key)) {
+            //
+            //     }
+            // }
+            // if (!oldMap->checkAllMoved()) {
+            //
+            // }
         }
     }
     auto getCurrMap() {
         return &(maps.load()->curr);
     }
 private:
-    bool checkCorrectMap(Maps* assumedMaps) {
+    bool checkCorrectMap(Maps* assumedMaps) const {
         return assumedMaps == this->maps.load(std::memory_order_acquire);
     }
 
