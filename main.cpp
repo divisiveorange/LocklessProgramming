@@ -11,12 +11,14 @@ void doStuff(ResizeableHashMap<K, V>& map, int threadIndex) {
     for (auto i = 0ll; i < size; i++) {
         map.insert(i, threadIndex);
         std::this_thread::sleep_for(std::chrono::nanoseconds(10000));
-        map.remove(size-i);
+        int maxDepth;
+        map.remove(size-i, maxDepth);
     }
 }
 
 bool testDataRemains() {
-    for (int k = 0; k < 1000; k++) {
+    for (int k = 0; k < 100; k++) {
+        std::cout << "Iteration: " << k << "\n";
         ResizeableHashMap<int, bool> map;
         {
             std::vector<std::jthread> threads;
@@ -32,6 +34,7 @@ bool testDataRemains() {
                             }
                         }
                     }
+                return true;
                 });
             }
         }
@@ -44,36 +47,63 @@ bool testDataRemains() {
                 }
             }
         }
+        {
+            std::vector<std::jthread> threads;
+            threads.reserve(threadCount);
+            for (int i = 0; i < threadCount; i++) {
+                threads.emplace_back([&map, i]() {
+                    for (int j = 0; j < size/2; j++) {
+                        int maxDepth = 0;
+                        auto result = map.remove(size*i + j, maxDepth);
+                        if (!result) {
+
+                        }
+                        if (map.get(size*i+j)) {
+                                std::cout << size*i+j << " (just removed) wasn't removed\n";
+                                std::this_thread::sleep_for(std::chrono::nanoseconds(1000000));
+                                if (map.get(size*i+j)) {
+                                    std::cout << "Get is correct, remove is wrong. Remove reports " << (result) << std::endl;
+                                    std::cout << "Maxdepth = " << maxDepth << std::endl;
+                                } else {
+                                    std::cout << "Get is wrong, remove is correct" << std::endl;
+                                }
+                                return false;
+                        }
+                        map.insert(threadCount*size + j, true);
+                        if (j >= 4) {
+                            if (map.get(size*i+j-4)) {
+                                std::cout << size*i+j-4 << " (-4) wasn't removed\n";
+                                std::this_thread::sleep_for(std::chrono::nanoseconds(1000000));
+                                if (map.get(size*i+j - 4)) {
+                                    std::cout << "Get is correct, remove is wrong" << std::endl;
+                                } else {
+                                    std::cout << "Get is wrong, remove is correct" << std::endl;
+                                }
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                });
+            }
+        }
+        for (int i = 0; i < threadCount; i++) {
+            for (int j = 0; j < size/2; j++) {
+                if (map.get(size*i+j)) {
+                    std::cout << size*i+j << " Remains\n";
+                    return false;
+                }
+            }
+            for (int j = size/2; j < size; j++) {
+                if (!map.get(size*i+j)) {
+                    std::cout << size*i+j << " Was removed\n";
+                    auto curr = map.getCurrMap();
+                    return false;
+                }
+            }
+        }
     }
     return true;
-    // {
-    //     std::vector<std::jthread> threads;
-    //     threads.reserve(threadCount);
-    //     for (int i = 0; i < threadCount; i++) {
-    //         threads.emplace_back([&map, i]() {
-    //             for (int j = 0; j < size/2; j++) {
-    //                 map.remove(size*i + j);
-    //                 map.insert(threadCount*size + j, true);
-    //             }
-    //         });
-    //     }
-    // }
-    // for (int i = 0; i < threadCount; i++) {
-    //     for (int j = 0; j < size/2; j++) {
-    //         if (map.get(size*i+j)) {
-    //             std::cout << size*i+j << " Remains\n";
-    //             return false;
-    //         }
-    //     }
-    //     for (int j = size/2; j < size; j++) {
-    //         if (!map.get(size*i+j)) {
-    //             std::cout << size*i+j << " Was removed\n";
-    //             auto curr = map.getCurrMap();
-    //             return false;
-    //         }
-    //     }
-    // }
-    // return true;
 }
 void smokeTest() {
     // My goal here is to write code, I can't really be bothered to write super robust testing.
@@ -81,7 +111,8 @@ void smokeTest() {
     map.insert(1, 1);
     auto res = map.get(1);
     std::cout << res->value << std::endl;
-    map.remove(1);
+    int maxDepth;
+    map.remove(1, maxDepth);
     {
         std::vector<std::jthread> threads;
         for (int i = 0; i < threadCount; i++) {

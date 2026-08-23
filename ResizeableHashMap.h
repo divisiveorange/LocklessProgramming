@@ -291,12 +291,13 @@ public:
                     break;
                 }
                 if (ptr.beingMoved()) {
-                    if (!checkCorrectMap(currMaps)) {
-                        return get(key);
-                    }
+                    return get(key);
                 }
                 if (ptr.alive()) {
                     if (ptr->hash == hash && ptr->key == key) {
+                        if (!checkCorrectMap(currMaps)) {
+                            return get(key);
+                        }
                         return ptr.ptr();
                     }
                 }
@@ -325,6 +326,9 @@ public:
                 }
                 if (ptr.alive()) {
                     if (ptr->hash == hash && ptr->key == key) {
+                        if (!checkCorrectMap(currMaps)) {
+                            return get(key);
+                        }
                         return ptr.ptr();
                     }
                 }
@@ -343,6 +347,9 @@ public:
                 }
                 if (ptr.ptr() == targetPtr.ptr()) {
                     if (ptr.alive()) {
+                        if (!checkCorrectMap(currMaps)) {
+                            return get(key);
+                        }
                         return ptr.ptr();
                     }
                     if (!checkCorrectMap(currMaps)) {
@@ -351,16 +358,20 @@ public:
                     return nullptr;
                 }
                 if (((i + 1) & (currArr.size - 1)) == initial) {
+                    if (!checkCorrectMap(currMaps)) {
+                        return get(key);
+                    }
                     return targetPtr.ptr();
                 }
             }
         }
     }
-    bool remove(const K &key) {
-       return remove(key, std::hash<K>{}(key));
+    int remove(const K &key, int& maxDepth) {
+       return remove(key, std::hash<K>{}(key), maxDepth);
     }
-    bool remove(const K &key, const size_t hash) {
+    int remove(const K &key, const size_t hash, int& maxDepth) {
         auto currMaps = maps.load(std::memory_order_acquire);
+        bool removed = false;
         {
             auto& currArr = *currMaps->curr;
             auto initial = hash & (currArr.size - 1);
@@ -374,15 +385,17 @@ public:
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return remove(key, hash);
+                                maxDepth++;
+                                return 10*remove(key, hash, maxDepth);
                             }
                             currMaps->curr->population.decrement();
-                            return true;
+                            removed = true;
+                            break;
                         }
                     }
                 }
                 if (((i + 1) & (currArr.size - 1)) == initial) {
-                    break;
+                    throw std::runtime_error("Out of space in HashMap");
                 }
             }
         }
@@ -393,27 +406,52 @@ public:
             for (auto i = initial; ; i = (i + 1) & (currArr.size - 1)) {
                 auto ptr = currArr[i].load(std::memory_order_acquire);
                 if (ptr.empty()) {
-                    return false;
+                    if (!checkCorrectMap(currMaps)) {
+                        maxDepth++;
+                        return 10*remove(key, hash, maxDepth);
+                    }
+                    if (!removed) {
+                        return 6;
+                    }
+                    return 0;
                 }
-                if (ptr.alive()) {
+                if (ptr.alive() and not ptr.beingMoved()) {
                     if (ptr->hash == hash && ptr->key == key) {
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return remove(key, hash);
+                                maxDepth++;
+                                return 10*remove(key, hash, maxDepth);
                             }
-                            return true;
+                            if (!removed) {
+                                return 7;
+                            }
+                            return 1;
                         }
                     }
                 }
-                if (ptr.beingMoved() and not ptr.dead()) {
+                if (ptr.beingMoved() and ptr.alive()) {
                     if (ptr->hash == hash && ptr->key == key) {
                         targetPtr = ptr.ptr();
+                        auto deadPtr = ptr.makeDead();
+                        if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
+                            if (!checkCorrectMap(currMaps)) {
+                                maxDepth++;
+                                return 10*remove(key, hash, maxDepth);
+                            }
+                        }
                         break;
                     }
                 }
+                if (ptr.beingMoved() and ptr.dead()) {
+                    if (ptr->hash == hash && ptr->key == key) {
+                        targetPtr = ptr.ptr();
+                    }
+                    break;
+                }
+
                 if (((i + 1) & (currArr.size - 1)) == initial) {
-                    return false;
+                    throw std::runtime_error("Out of space in HashMap");
                 }
             }
         }
@@ -428,10 +466,11 @@ public:
                     moveItems();
                     if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                         if (!checkCorrectMap(currMaps)) {
-                            return remove(key, hash);
+                            maxDepth++;
+                            return 10*remove(key, hash, maxDepth);
                         }
                         currMaps->curr->population.decrement();
-                        return true;
+                        return 2;
                     }
                 }
                 if (ptr.ptr() == targetPtr.ptr()) {
@@ -439,15 +478,30 @@ public:
                         auto deadPtr = targetPtr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return remove(key, hash);
+                                maxDepth++;
+                                return 10*remove(key, hash, maxDepth);
                             }
                             currMaps->curr->population.decrement();
-                            return true;
+                            return 3;
                         }
-                        return false;
+                        if (!checkCorrectMap(currMaps)) {
+                            maxDepth++;
+                            return 10*remove(key, hash, maxDepth);
+                        }
+                        if (!removed) {
+
+                        }
+                        return 4;
 
                     }
-                    return false;
+                    if (!checkCorrectMap(currMaps)) {
+                        maxDepth++;
+                        return 10*remove(key, hash, maxDepth);
+                    }
+                    if (!removed) {
+
+                    }
+                    return 5;
                 }
                 if (((i + 1) & (currArr.size - 1)) == initial) {
                     throw std::runtime_error("Out of space in HashMap");
