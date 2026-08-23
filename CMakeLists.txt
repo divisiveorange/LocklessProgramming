@@ -8,4 +8,5 @@ add_executable(LockLessProgramming main.cpp
         Deque.h
         FixedSizeHashMap.h
         BasicStack.h
-        ResizeableHashMap.h)
+        ResizeableHashMap.h
+        Epoch.h)
