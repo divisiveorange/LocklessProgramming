@@ -9,4 +9,6 @@ add_executable(LockLessProgramming main.cpp
         FixedSizeHashMap.h
         BasicStack.h
         ResizeableHashMap.h
-        Epoch.h)
+        ThreadedArena.h
+        ThreadedArena.h
+        ThreadedArena.h)

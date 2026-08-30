@@ -5,6 +5,7 @@
 #include <thread>
 #include <__new/interference_size.h>
 #include <__thread/this_thread.h>
+#include "ThreadedArena.h"
 template<typename K, typename V>
 class ResizeableHashMap;
 
