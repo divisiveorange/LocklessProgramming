@@ -9,15 +9,15 @@ static constexpr int threadCount = 16;
 template <typename K, typename V>
 void doStuff(ResizeableHashMap<K, V>& map, int threadIndex) {
     for (auto i = 0ll; i < size; i++) {
-        map.insert(i, threadIndex);
+        auto token = map.createUsingToken();
+        map.insert(i, threadIndex, token);
         std::this_thread::sleep_for(std::chrono::nanoseconds(10000));
-        int maxDepth;
-        map.remove(size-i, maxDepth);
+        map.remove(size-i, token);
     }
 }
 
 bool testDataRemains() {
-    for (int k = 0; k < 100; k++) {
+    for (int k = 0; k < 1000; k++) {
         std::cout << "Iteration: " << k << "\n";
         ResizeableHashMap<int, bool> map;
         {
@@ -26,9 +26,10 @@ bool testDataRemains() {
             for (int i = 0; i < threadCount; i++) {
                 threads.emplace_back([&map, i]() {
                     for (int j = 0; j < size; j++) {
-                        map.insert(size*i + j, true);
+                        auto token = map.createUsingToken();
+                        map.insert(size*i + j, true, token);
                         if (j >= 4) {
-                            if (!map.get(size*i+j-4)) {
+                            if (!map.get(size*i+j-4, token)) {
                                 std::cout << size*i+j-4 << " is missing\n";
                                 return false;
                             }
@@ -38,12 +39,14 @@ bool testDataRemains() {
                 });
             }
         }
-        for (int i = 0; i < threadCount; i++) {
-            for (int j = size; j < size; j++) {
-                if (!map.get(size*i+j)) {
-                    std::cout << size*i+j << " Was removed\n";
-                    auto curr = map.getCurrMap();
-                    return false;
+        {
+            auto token = map.createUsingToken();
+            for (int i = 0; i < threadCount; i++) {
+                for (int j = size; j < size; j++) {
+                    if (!map.get(size*i+j, token)) {
+                        std::cout << size*i+j << " Was removed\n";
+                        return false;
+                    }
                 }
             }
         }
@@ -53,28 +56,27 @@ bool testDataRemains() {
             for (int i = 0; i < threadCount; i++) {
                 threads.emplace_back([&map, i]() {
                     for (int j = 0; j < size/2; j++) {
-                        int maxDepth = 0;
-                        auto result = map.remove(size*i + j, maxDepth);
+                        auto token = map.createUsingToken();
+                        auto result = map.remove(size*i + j, token);
                         if (!result) {
 
                         }
-                        if (map.get(size*i+j)) {
+                        if (map.get(size*i+j, token)) {
                                 std::cout << size*i+j << " (just removed) wasn't removed\n";
                                 std::this_thread::sleep_for(std::chrono::nanoseconds(1000000));
-                                if (map.get(size*i+j)) {
+                                if (map.get(size*i+j, token)) {
                                     std::cout << "Get is correct, remove is wrong. Remove reports " << (result) << std::endl;
-                                    std::cout << "Maxdepth = " << maxDepth << std::endl;
                                 } else {
                                     std::cout << "Get is wrong, remove is correct" << std::endl;
                                 }
                                 return false;
                         }
-                        map.insert(threadCount*size + j, true);
+                        map.insert(threadCount*size + j, true, token);
                         if (j >= 4) {
-                            if (map.get(size*i+j-4)) {
+                            if (map.get(size*i+j-4, token)) {
                                 std::cout << size*i+j-4 << " (-4) wasn't removed\n";
                                 std::this_thread::sleep_for(std::chrono::nanoseconds(1000000));
-                                if (map.get(size*i+j - 4)) {
+                                if (map.get(size*i+j - 4, token)) {
                                     std::cout << "Get is correct, remove is wrong" << std::endl;
                                 } else {
                                     std::cout << "Get is wrong, remove is correct" << std::endl;
@@ -89,15 +91,16 @@ bool testDataRemains() {
         }
         for (int i = 0; i < threadCount; i++) {
             for (int j = 0; j < size/2; j++) {
-                if (map.get(size*i+j)) {
+                auto token = map.createUsingToken();
+                if (map.get(size*i+j, token)) {
                     std::cout << size*i+j << " Remains\n";
                     return false;
                 }
             }
             for (int j = size/2; j < size; j++) {
-                if (!map.get(size*i+j)) {
+                auto token = map.createUsingToken();
+                if (!map.get(size*i+j, token)) {
                     std::cout << size*i+j << " Was removed\n";
-                    auto curr = map.getCurrMap();
                     return false;
                 }
             }
@@ -108,11 +111,12 @@ bool testDataRemains() {
 void smokeTest() {
     // My goal here is to write code, I can't really be bothered to write super robust testing.
     ResizeableHashMap<int, int> map;
-    map.insert(1, 1);
-    auto res = map.get(1);
+    auto token = map.createUsingToken();
+    map.insert(1, 1, token);
+    auto res = map.get(1, token);
     std::cout << res->value << std::endl;
     int maxDepth;
-    map.remove(1, maxDepth);
+    map.remove(1, token);
     {
         std::vector<std::jthread> threads;
         for (int i = 0; i < threadCount; i++) {
@@ -122,7 +126,7 @@ void smokeTest() {
         }
     }
     for (int i = 0; i < size; i++) {
-        if (auto ptr = map.get(i)) {
+        if (auto ptr = map.get(i, token)) {
             std::cout << i << ": " << ptr->value << std::endl;
         } else {
             std::cout << i << ": null" << std::endl;
