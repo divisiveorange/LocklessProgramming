@@ -15,7 +15,37 @@ void doStuff(ResizeableHashMap<K, V>& map, int threadIndex) {
         map.remove(size-i, token);
     }
 }
-
+bool testMemoryReclaimation() {
+    ResizeableHashMap<int, bool> map;
+    std::vector<std::jthread> threads;
+    for (int i = 0; i < threadCount; i++) {
+        threads.emplace_back([&map, i]() {
+            for (int k = 0; k < size; k++) {
+                for (int j = 0; j < size; j++) {
+                    auto token = map.createUsingToken();
+                    map.insert(size * i + j, true, token);
+                }
+                for (int j = 0; j < size; j++) {
+                    auto token = map.createUsingToken();
+                    if (!map.get(size * i + j, token)) {
+                        std::cout << size * i + j << " wasn't inserted\n";
+                    }
+                }
+                for (int j = 0; j < size; j++) {
+                    auto token = map.createUsingToken();
+                    map.remove(size * i + j, token);
+                }
+                for (int j = 0; j < size; j++) {
+                    auto token = map.createUsingToken();
+                    if (map.get(size * i + j, token)) {
+                        std::cout << size * i + j << " wasn't removed\n";
+                    }
+                }
+            }
+        });
+    }
+    return true;
+}
 bool testDataRemains() {
     for (int k = 0; k < 1000; k++) {
         std::cout << "Iteration: " << k << "\n";
@@ -135,7 +165,7 @@ void smokeTest() {
 }
 
 int main() {
-    std::cout << (testDataRemains() ? "true" : "false") << "\n";
+    std::cout << (testMemoryReclaimation() ? "true" : "false") << "\n";
     return 0;
 }
 
