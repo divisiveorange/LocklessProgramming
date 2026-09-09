@@ -1,9 +1,18 @@
-This project is an attempt to make several lockless data structures in C++. 
+This project is a small collection of lockless (and wait free) concurrent data structures:
+a stack, a fixed sized hash-map and the star of the show, a resizeable hash-map, complete with memory reclamation.
 
-Currently, it has a stack using a linked list (very basic as lockless programming goes) and a fixed size probing hashmap without reallocation of recycling tombstones.
+The stack and fixed sized hash-map are simple enough I won't go into depth about their inner workings, but I will for the resizeable hashmap.
 
-My plan is to, based on my fixed size hashmap, make a resizable hashmap by concurrently maintaining 2 maps and incrementally moving elements, and then once that is done without freeing memory, implement Epoch Based Reclamation.
+First, the scope: I want this map to be akin to a typical C++ datastructure in design that also happens to support lockless operations. This means it should take arbitrary types for the key and values, it should not be a singleton, and it should own all the data it needs.
 
-The code style of this project is the code I want to write for myself, so that the code executes as cleanly as possible despite the C++ code not neccessarily being too clean.
+A very important question when making a hash-map is whether it should use open addressing or seperate chaining. There are generally performance benefits to open addressing, but I picked it because lockless operations on an array seemed less daunting than arbitrary deletions in a linked list (and I didn't want too stray as far from standard designs as to use an array per node). 
 
-My biggest takeaway of this project is just that lockless programming is a fun challenge.
+However, due to wanting to support keys of arbitrary size, I store the hash, key and value as a heap object so that I can just have the map operate on the pointer, potentially undoing the performance benefits of open addressing. 
+
+To handle the state of elements in the map (moving, deleted, active), I packed the bottom 2 bits (the bottom 3 are fine to pack because of the alignment of the hash). Deletions are therefore handled by just marking the bottom bit.
+I chose not to handle reusing deleted slots since it could create issues with duplicate insertions if a thread is above to insert in a slot but is put to sleep, then an earlier element is removed and then a new element with the same key as is being inserted is inserted in that earlier slot, then when the first thread wakes it'll insert a second element with the same key. I just let the resizing handle the space taken up by removed items.
+
+The key to the design is the use of 2 arrays (it was much quicker to make the fixed sized hash map, I'll tell you that) and treat both as valid for the purpose of retrival while moving items across as new ones are inserted only into the "new" array. 
+After a resize has taken place, every item in the map is in the "old" array. When a thread tries to insert new data into the array, it first incremenets a counter for how far along the old array has been moved by 16. It then searches those 16 slots in the old array and moves all the alive items, marking each of them as being moved before moving, and marking them as dead after being inserted. When moving, it only inserts into the new array if it doesn't see the key in the new array, regardless of the state of that element since the new array always has newer data than the old array.
+When the thread completes the move of its elements, it marks a slot for said 16 elements in array to true and then begins inserting its actual data into the new array. It probes from the start for that hash until it either finds an empty slot or a slot with the same key (which is found with first a check that the hash matches to short circuit in case the key's operator== is expensive to compute) in which case it will insert the new data there. It, naturally, inserts with an atomic compare swap. 
+The remove method probes through the new array. If it finds the key, it marks it as deleted and returns. If it doesn't find the key in the new array, it searches through the old array. If it sees the item with the correct key and it is not marked as being moved, it marks it as deleted and returns. If it sees the correct key and it is being moved, 

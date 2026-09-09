@@ -371,11 +371,11 @@ public:
             }
         }
     }
-    int remove(const K &key, UsingToken& token) {
-       return remove(key, std::hash<K>{}(key));
+    void remove(const K &key, UsingToken& token) {
+       remove(key, std::hash<K>{}(key));
     }
 private:
-    int remove(const K &key, const size_t hash) {
+    void remove(const K &key, const size_t hash) {
         auto currMaps = maps.load(std::memory_order_acquire);
         bool removed = false;
         {
@@ -391,7 +391,8 @@ private:
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return 10*remove(key, hash);
+                                remove(key, hash);
+                                return;
                             }
                             currMaps->curr->population.decrement();
                             removed = true;
@@ -412,24 +413,20 @@ private:
                 auto ptr = currArr[i].load(std::memory_order_acquire);
                 if (ptr.empty()) {
                     if (!checkCorrectMap(currMaps)) {
-                        return 10*remove(key, hash);
+                        remove(key, hash);
+                        return;
                     }
-                    if (!removed) {
-                        return 6;
-                    }
-                    return 0;
+                    return;
                 }
-                if (ptr.alive() and not ptr.beingMoved()) {
+                if (not ptr.beingMoved() and ptr.alive()) {
                     if (ptr->hash == hash && ptr->key == key) {
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return 10*remove(key, hash);
+                                remove(key, hash);
+                                return;
                             }
-                            if (!removed) {
-                                return 7;
-                            }
-                            return 1;
+                            return;
                         }
                     }
                 }
@@ -439,7 +436,8 @@ private:
                         auto deadPtr = ptr.makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return 10*remove(key, hash);
+                                remove(key, hash);
+                                return;
                             }
                         }
                         break;
@@ -469,10 +467,11 @@ private:
                     moveItems();
                     if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                         if (!checkCorrectMap(currMaps)) {
-                            return 10*remove(key, hash);
+                            remove(key, hash);
+                            return;
                         }
                         currMaps->curr->population.decrement();
-                        return 2;
+                        return;
                     }
                 }
                 if (ptr->hash == target->hash and ptr->key == target->key) {
@@ -480,24 +479,22 @@ private:
                         auto deadPtr = PackedPointer(lazyCopy.getCopy()).makeDead();
                         if (currArr[i].compare_exchange_strong(ptr, deadPtr)) {
                             if (!checkCorrectMap(currMaps)) {
-                                return 10*remove(key, hash);
+                                remove(key, hash);
+                                return;
                             }
                             currMaps->curr->population.decrement();
-                            return 3;
+                            return;
                         }
                         if (!checkCorrectMap(currMaps)) {
-                            return 10*remove(key, hash);
+                            remove(key, hash);
                         }
-                        if (!removed) {
-
-                        }
-                        return 4;
+                        return;
 
                     }
                     if (!checkCorrectMap(currMaps)) {
-                        return 10*remove(key, hash);
+                        remove(key, hash);
                     }
-                    return 5;
+                    return;
                 }
                 if (((i + 1) & (currArr.size - 1)) == initial) {
                     throw std::runtime_error("Out of space in HashMap");
