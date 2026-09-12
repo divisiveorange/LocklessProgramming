@@ -583,7 +583,12 @@ private:
     }
 public:
     auto createUsingToken() {
-        return arenas[maps.load(std::memory_order_acquire)->old->createdEpoch % arenas.size()].getRAIIToken();
+        auto currMaps = maps.load(std::memory_order_acquire);
+        auto token = arenas[currMaps->old->createdEpoch % arenas.size()].getRAIIToken();
+        if (!checkCorrectMap(currMaps)) {
+            return createUsingToken();
+        }
+        return token;
     }
 private:
     bool checkCorrectMap(Maps* assumedMaps) const {
